@@ -1,0 +1,34 @@
+# Local dependencies and generated output
+node_modules/
+dist/
+reports/
+test-results/
+playwright-report/
+coverage/
+.cache/
+*.log
+*.tsbuildinfo
+
+# Credentials and local settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+service-account*.json
+secrets*.json
+*api-key*.txt
+
+# OS and editor files
+.DS_Store
+._*
+Thumbs.db
+.idea/
+.vscode/
+
+# Local archives; release packages are built into dist/
+*.zip
+*.webm

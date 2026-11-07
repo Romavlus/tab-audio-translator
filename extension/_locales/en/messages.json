@@ -1,0 +1,8 @@
+{
+  "extensionName": {
+    "message": "Tab Audio Translator"
+  },
+  "extensionDescription": {
+    "message": "Translate tab audio with speech, subtitles and local history. Connect using your own Gemini API key."
+  }
+}

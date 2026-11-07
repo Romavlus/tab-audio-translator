@@ -1,0 +1,145 @@
+// UI smoke tests in an isolated headless browser, with a mocked Chrome API.
+// This does not install an extension or access the user's Chrome profile.
+import { chromium } from 'playwright';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+const root=path.resolve('extension');
+const browser=await chromium.launch({headless:true});
+const context=await browser.newContext({viewport:{width:380,height:600}});
+const errors=[];
+await context.route('**/*',async route=>{
+ const url=new URL(route.request().url());
+ if(url.hostname!=='lite.test') return route.abort();
+ const file=path.resolve(root,'.'+decodeURIComponent(url.pathname));
+ if(!file.startsWith(root+path.sep)) return route.abort();
+ const type=file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':file.endsWith('.png')?'image/png':'text/html';
+ try {await route.fulfill({body:await readFile(file),contentType:type});} catch {await route.fulfill({status:404,body:'Not found'});}
+});
+await context.addInitScript(()=>{
+ const stored=JSON.parse(localStorage.getItem('fixture')||'null');
+ window.config=stored||{apiKey:'',hasKey:false,targetLanguage:'ru',mode:'voice',voiceVolume:80,translationVolume:80,originalVolume:15,captions:false};
+ window.run={running:false,status:'idle',latest:'',latestInput:''};
+ window.events=[];
+ window.chrome={tabs:{query:async()=>[{id:7,title:'Учебное видео',url:'https://example.com/video'}]},runtime:{openOptionsPage:()=>{window.archiveOpened=true;},sendMessage:async message=>{
+ window.events.push(message.type);
+ if(message.type==='save-settings'){Object.assign(window.config,message.patch);window.config.hasKey=Boolean(window.config.apiKey);localStorage.setItem('fixture',JSON.stringify(window.config));}
+ if(message.type==='start') window.run={running:true,status:'connected',latest:'Теперь можно смотреть видео на своём языке.',latestInput:'Now you can watch in your own language.',source:{title:'Учебное видео'}};
+ if(message.type==='stop') window.run={running:false,status:'stopped',latest:'',latestInput:''};
+ let data=message.type==='snapshot'?{state:window.run,settings:window.config}:message.type==='check-key'?'Ключ принят, модель перевода доступна.':window.config;
+ return {ok:true,data};
+ }}};
+});
+try{
+ const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
+ await page.goto('http://lite.test/popup.html');
+ await page.getByRole('button',{name:'Подключить Gemini',exact:true}).waitFor();
+ await page.screenshot({path:'reports/release-first-launch.png'});
+ assert.equal(await page.locator('#latest-card').isVisible(),false);
+ await page.locator('#toggle').click();
+ await page.locator('#api-key').fill('local-fixture-key');
+ await page.getByRole('button',{name:'Сохранить ключ',exact:true}).click();
+ await page.locator('#settings-message').filter({hasText:'Ключ сохранён'}).waitFor();
+ assert.equal(await page.evaluate(()=>window.events.includes('check-key')),false,'saving key must not contact Google');
+ assert.equal(await page.locator('#api-key').getAttribute('type'),'password');
+ await page.screenshot({path:'reports/release-settings.png'});
+ await page.locator('#back').click();
+ await page.locator('#target-language').selectOption('es');
+ await page.waitForFunction(()=>window.config.targetLanguage==='es');
+ await page.waitForFunction(()=>document.documentElement.lang==='es');
+ assert.equal(await page.locator('#toggle').innerText(),'Iniciar traducción ▶');
+ assert.equal(await page.locator('#target-language option').count(),13);
+ assert.equal(await page.locator('.test-label').count(),0);
+ assert.equal(await page.evaluate(()=>{
+  const select=document.getElementById('target-language'),field=select.getBoundingClientRect();
+  const all=document.getElementById('all-languages').getBoundingClientRect();
+  const modes=document.querySelector('.modes').getBoundingClientRect();
+  const style=getComputedStyle(select);
+  return Math.abs(field.top-all.top)<10 && modes.top-Math.max(field.bottom,all.bottom)<=18 && style.appearance==='none' && parseFloat(style.paddingRight)>=30 && style.backgroundPosition.includes('10px');
+ }),true,'all-languages stays beside the select, with no blank row; arrow has an inset');
+ assert.equal(await page.title(),'Traductor de pestañas');
+ await page.locator('#all-languages').click();
+ assert.equal(await page.locator('[data-language]').count(),78);
+ await page.locator('#language-search').fill('zzzzz');
+ assert.equal(await page.locator('#no-languages').isVisible(),true);
+ await page.locator('#language-search').fill('Bengali');
+ assert.equal(await page.locator('[data-language]').count(),1);
+ await page.locator('[data-language=bn]').click();
+ await page.waitForFunction(()=>window.config.targetLanguage==='bn');
+ assert.equal(await page.locator('#languages-panel').isVisible(),false);
+ assert.equal(await page.locator('#target-language').inputValue(),'bn');
+ assert.equal(await page.locator('#target-language option').count(),14);
+ await page.reload();
+ await page.waitForFunction(()=>document.getElementById('target-language').value==='bn');
+ await page.locator('#all-languages').click();
+ await page.locator('#language-search').press('Escape');
+ assert.equal(await page.locator('#languages-panel').isVisible(),false);
+ await page.locator('#target-language').selectOption('es');
+ await page.waitForFunction(()=>document.documentElement.lang==='es');
+ await page.locator('#settings').click();
+ await page.locator('.key-guide summary').click();
+ assert.equal(await page.locator('[data-i18n=guide3]').isVisible(),true);
+ assert.match(await page.locator('[data-i18n=guide3]').innerText(),/OAuth/);
+ await page.screenshot({path:'reports/lite-spanish-guide.png'});
+ await page.locator('#back').click();
+ await page.locator('[data-mode=subtitles]').click();
+ await page.waitForFunction(()=>window.config.translationVolume===0&&window.config.captions);
+ assert.equal(await page.locator('#voice-controls').isVisible(),false);
+ await page.locator('[data-mode=both]').click();
+ await page.waitForFunction(()=>window.config.translationVolume===80&&window.config.captions);
+ await page.reload();
+ await page.waitForFunction(()=>document.querySelector('[data-mode=both]').getAttribute('aria-pressed')==='true');
+ assert.equal(await page.locator('#target-language').inputValue(),'es');
+ await page.locator('#target-language').selectOption('ru');
+ await page.waitForFunction(()=>window.config.targetLanguage==='ru');
+ await page.locator('#toggle').click();
+ await page.locator('#latest-card').waitFor({state:'visible'});
+ assert.equal(await page.locator('#target-language').isDisabled(),true);
+ await page.screenshot({path:'reports/release-translating.png'});
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=380),true,'no horizontal overflow');
+ assert.equal(await page.evaluate(()=>document.querySelector('footer').getBoundingClientRect().bottom<=600),true,'footer remains visible');
+ await page.locator('#toggle').click();
+ assert.equal(await page.locator('#latest-card').isVisible(),false,'old text is hidden after stopping');
+ await page.locator('#archive').click();assert.equal(await page.evaluate(()=>window.archiveOpened),true);
+ for (const code of ['en','es','de','fr','it','pt-BR','uk','ja','zh-Hans','ko','tr','ru']) {
+  await page.locator('#target-language').selectOption(code);
+  await page.waitForFunction(code=>window.config.targetLanguage===code,code);
+  await page.waitForFunction(code=>document.documentElement.lang===code.split('-')[0],code);
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=380),true,`layout: ${code}`);
+}
+await page.locator('#target-language').selectOption('ru');
+await page.waitForFunction(()=>document.documentElement.lang==='ru');
+await page.screenshot({path:'reports/release-russian.png'});
+await page.locator('#all-languages').click();
+await page.locator('#language-search').fill('испан');
+await page.screenshot({path:'reports/release-language-search.png'});
+await page.locator('#languages-back').click();
+await page.locator('#target-language').selectOption('es');
+await page.waitForFunction(()=>document.documentElement.lang==='es');
+await page.screenshot({path:'reports/release-spanish.png'});
+const archive=await context.newPage();archive.on('pageerror',e=>errors.push(e.message));
+await archive.setViewportSize({width:1180,height:800});await archive.goto('http://lite.test/options.html');
+await archive.waitForFunction(()=>document.documentElement.lang==='es');
+assert.equal(await archive.locator('#refresh-archive').innerText(),'Actualizar');
+await archive.evaluate(async()=>{
+ const db=await import('/lib/archive.js');const now=Date.now();
+ await db.createSession({id:'locale-demo',title:'Video de prueba',url:'https://example.com/video',startedAt:now-60000,updatedAt:now,endedAt:now,status:'stopped'});
+ await db.saveFragments([{id:'phrase',sessionId:'locale-demo',kind:'output',text:'Texto de ejemplo para probar la interfaz.',createdAt:now,updatedAt:now,offsetMs:1000}]);
+});
+await archive.locator('#refresh-archive').click();
+await archive.locator('#session-title').filter({hasText:'Video de prueba'}).waitFor();
+assert.match(await archive.locator('#archive-text').innerText(),/Texto de ejemplo/);
+await archive.screenshot({path:'reports/lite-spanish-history.png'});
+await page.locator('#target-language').selectOption('en');
+await page.waitForFunction(()=>document.documentElement.lang==='en');
+assert.equal(await page.locator('h1').innerText(),'Tab Audio Translator');
+await page.evaluate(()=>{window.run={running:false,status:'failed',detail:'The Gemini connection timed out.',storageError:'Gemini quota exceeded. Check your project quotas.'};});
+await page.waitForFunction(()=>document.querySelector('#detail').textContent==='The Gemini connection timed out.');
+assert.match(await page.locator('#warning').innerText(),/Gemini quota exceeded/);
+await page.locator('#target-language').selectOption('ru');
+await page.waitForFunction(()=>document.documentElement.lang==='ru');
+await page.waitForFunction(()=>document.querySelector('#detail').textContent==='Истекло время подключения к Gemini.');
+assert.match(await page.locator('#warning').innerText(),/Лимит Gemini/);
+assert.deepEqual(errors,[]);
+ console.log('Lite UI passed: onboarding, in-popup settings, mode/mute, language persistence, start/stop, archive link, popup layout. Chrome/Gemini APIs mocked; no real audio translation tested.');
+} finally {await browser.close();}

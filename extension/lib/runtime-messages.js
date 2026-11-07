@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: 0BSD
+// Backend messages use English; the UI can display Russian equivalents.
+const RUSSIAN = {
+  "Unknown error": "Неизвестная ошибка",
+  "Gemini quota exceeded. Check your quotas in Google AI Studio.": "Лимит Gemini исчерпан. Проверьте квоты в Google AI Studio.",
+  "Gemini rejected the API key. Check the key in Settings.": "Gemini не принял API-ключ. Проверьте ключ в настройках.",
+  "Gemini access denied. Check key restrictions and API access for your project.": "Нет доступа к Gemini. Проверьте ограничения ключа и доступность API для проекта.",
+  "The audio engine is not responding. Reopen the extension and try again.": "Аудиодвижок не отвечает. Откройте расширение и повторите запуск.",
+  "Stop the current tab translation first.": "Сначала остановите перевод текущей вкладки.",
+  "Add a Gemini API key in Settings.": "Добавьте API-ключ Gemini в настройках.",
+  "Open a regular web page with audio and start the extension there.": "Откройте обычную страницу со звуком и запустите расширение на ней.",
+  "Enter and save your API key first.": "Сначала введите и сохраните API-ключ.",
+  "Key accepted. The translation model is available.": "Ключ принят, модель перевода доступна.",
+  "Unknown extension command.": "Неизвестная команда расширения.",
+  "Translation repeatedly fell behind or looped. Start it again.": "Перевод неоднократно отстал или повторился. Запустите его снова.",
+  "Gemini quota exceeded. Check your project quotas.": "Лимит Gemini исчерпан. Проверьте квоты проекта.",
+  "The selected Gemini model is no longer available.": "Выбранная модель Gemini больше недоступна.",
+  "Connection error": "Ошибка соединения",
+  "This connection has already been used.": "Соединение уже использовано.",
+  "The Gemini connection timed out.": "Истекло время подключения к Gemini.",
+  "Cannot reach Gemini. Check your connection and API access.": "Сеть Gemini недоступна. Проверьте подключение и доступ к API.",
+  "The network cannot upload audio fast enough. Reconnecting.": "Сеть не успевает передавать звук. Подключаемся заново.",
+  "Connection cancelled.": "Подключение отменено.",
+  "Could not save history. Free up archive or disk space. Current text remains in memory for now.": "Не удалось сохранить историю. Освободите место в архиве или на диске. Текущий текст пока остаётся в памяти.",
+  "Translated speech is over 30 seconds behind. Reconnecting to the current audio.": "Озвучка отстала более чем на 30 секунд. Перевод переподключается к текущему звуку.",
+  "A long translation loop was detected. Reconnecting to the current audio.": "Обнаружен длинный повтор перевода. Переподключаемся к текущему звуку.",
+  "Translation is already running. Stop the current session first.": "Перевод уже запущен. Сначала остановите текущий сеанс.",
+  "Tab audio capture ended.": "Захват звука вкладки завершён.",
+  "Could not update history. Free up disk space.": "Не удалось обновить архив. Освободите место на диске.",
+  "Unknown audio engine command.": "Неизвестная команда аудиодвижка.",
+  "The extension is not responding. Reopen the popup.": "Расширение не отвечает. Повторите открытие окна.",
+  "No text in the selected period.": "За выбранное время текста пока нет.",
+  "Text copied.": "Текст скопирован.",
+  "Enter a number of minutes greater than zero.": "Введите число минут больше нуля.",
+  "Tab with audio": "Вкладка со звуком",
+  "Could not save history.": "Не удалось сохранить историю.",
+  "Saving history was interrupted.": "Сохранение истории прервано.",
+  "Close other history windows and try again.": "Закройте другие окна истории и повторите.",
+  "Ready to translate": "Готов к переводу",
+  "Connecting to Gemini…": "Подключение к Gemini…",
+  "Translating": "Перевод идёт",
+  "Reconnecting…": "Переподключение…",
+  "Trying to reconnect…": "Пробуем подключиться снова…",
+  "Could not continue": "Не удалось продолжить",
+  "Translation stopped": "Перевод остановлен",
+  "Video paused": "Видео на паузе"
+};
+export function localizeRuntimeMessage(message = '', locale = 'en') {
+  if (locale !== 'ru') return message;
+  return RUSSIAN[message] ?? message.replace(/^Gemini: connection closed \((\d+)\)\.$/, 'Gemini: соединение закрыто ($1).');
+}

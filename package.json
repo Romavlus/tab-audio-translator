@@ -1,0 +1,22 @@
+{
+  "name": "tab-audio-translator",
+  "version": "0.5.0",
+  "private": true,
+  "type": "module",
+  "license": "0BSD",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:ui": "node tests/lite-ui.mjs",
+    "check": "node scripts/check.mjs",
+    "check:publish": "node scripts/check-publish.mjs",
+    "package": "node scripts/package.mjs",
+    "docs:screenshots": "node scripts/capture-screenshots.mjs"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "6.2.6",
+    "playwright": "1.64.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
