@@ -57,7 +57,8 @@ try {
             let binary = ''; for (const byte of pcm) binary += String.fromCharCode(byte);
             body = { candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/L16;codec=pcm;rate=24000', data: btoa(binary) } }] } }] };
           } else body = { candidates: [{ content: { parts: [{ text: 'Привет! Это русский голосовой перевод.' }] } }] };
-          details.onload({ status: details.url.includes('googleapis') ? mock.code : 200, responseText: JSON.stringify(body) });
+          details.onload({ status: details.url.includes('googleapis') ? mock.code : 200,
+            responseText: mock.emptyCaptions && details.url.includes('timedtext') ? '' : JSON.stringify(body) });
         }, mock.delay);
         return { abort() { clearTimeout(timer); mock.pending--; mock.aborted++; details.onabort(); } };
       }
@@ -163,6 +164,25 @@ try {
   await (await el('file')).asElement().setInputFiles({ name: 'bad.srt', mimeType: 'text/plain', buffer: Buffer.from('Text without timestamps') });
   await waitStatus('Не найдены субтитры');
   ok(true, 'invalid subtitle files report a clear error');
+  const playerURL = 'https://www.youtube.com/api/timedtext?v=another-video&lang=en&pot=fixture-proof&fmt=json3';
+  await page.route(playerURL, route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ events: [
+    { tStartMs: 0, dDurationMs: 12000, segs: [{ utf8: 'Actual player captions with runtime authorization.' }] }
+  ] }) }));
+  // Mimic the successful caption request made by a running YouTube player.
+  await page.evaluate(url => fetch(url).then(r => r.text()), playerURL);
+  await page.waitForFunction(url => performance.getEntriesByName(url).length > 0, playerURL);
+  const beforePlayerRead = await page.evaluate(() => mock.calls.length);
+  await click('test'); await waitStatus('Первый фрагмент готов');
+  ok(await page.evaluate(() => JSON.parse(testRoot.getElementById('diagnostics').value).captionSource === 'player-request'), 'uses actual player caption request when bare timedtext is empty');
+  ok(await page.evaluate(n => mock.calls.slice(n).every(c => c.url.includes('googleapis')), beforePlayerRead), 'player captions use page fetch without GM request or Gemini key');
+  ok(await page.evaluate(() => mock.calls.filter(c => c.method === 'POST' && !c.url.includes('-tts:')).at(-1).body.contents[0].parts[0].text.includes('runtime authorization')), 'player caption response reaches translation');
+  await click('stop');
+  await page.evaluate(() => { history.pushState({}, '', '/watch?v=test-video'); mock.emptyCaptions = true; });
+  await page.waitForTimeout(500);
+  const paidBeforeEmpty = await page.evaluate(() => mock.calls.filter(c => c.method === 'POST').length);
+  await click('test'); await waitStatus('Не удалось получить текст от плеера');
+  ok((await page.evaluate(() => mock.calls.filter(c => c.method === 'POST').length)) === paidBeforeEmpty, 'empty caption responses never trigger paid Gemini requests');
+  ok(/видно запросов: \d+/.test(await status()), 'reports player request availability for real-device diagnosis');
   ok(errors.length === 0, `no browser exceptions: ${errors.join(', ')}`);
   console.log(`PASS: ${assertions} browser checks (mock Gemini/YouTube, real PCM/Web Audio). No paid API calls.`);
 } finally { await browser.close(); }

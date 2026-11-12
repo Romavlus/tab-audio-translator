@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Gemini Voice — iPhone prototype
 // @namespace    https://github.com/Romavlus/tab-audio-translator
-// @version      0.1.1
+// @version      0.1.2
 // @description  Russian voice-over using your Gemini key and existing YouTube captions. No tab-audio capture.
 // @match        https://www.youtube.com/*
 // @match        https://m.youtube.com/*
@@ -25,7 +25,8 @@
   const defaults = { textModel: 'gemini-3.8-flash', voiceModel: 'gemini-3.8-flash-tts', voice: 'Kore' };
   const state = { epoch: 0, requests: new Set(), chunks: [], cache: new Map(),
     active: false, video: null, source: null, audioIndex: -1, testEnd: Infinity,
-    context: null, originalMuted: false, pageId: '', busy: false };
+    context: null, originalMuted: false, pageId: '', busy: false, captionSource: '', playerRequests: 0 };
+  const pageRequests = new Set();
   let secret = '', config = { ...defaults }, tracks = [], imported = null;
   const host = document.createElement('div');
   host.id = 'yt-gemini-voice';
@@ -50,7 +51,7 @@
   </style><section>
     <header><strong>Gemini · озвучка YouTube</strong><button id="mini" aria-label="Свернуть">−</button></header>
     <main>
-      <p>Прототип 0.1.1 · переводит и озвучивает доступные субтитры. Без субтитров захват звука не работает.</p>
+      <p>Прототип 0.1.2 · переводит и озвучивает доступные субтитры. Без субтитров захват звука не работает.</p>
       <label>Gemini API key<input id="key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Вставь ключ только здесь"></label>
       <label><input id="remember" type="checkbox"> Сохранить ключ в хранилище Userscripts</label>
       <div class="row"><button id="check">Проверить ключ</button><button id="forget">Забыть ключ</button></div>
@@ -77,10 +78,11 @@
   const $ = id => root.getElementById(id);
   const say = message => { $('status').textContent = message; diagnostics(); };
   function diagnostics() {
-    $('diagnostics').value = JSON.stringify({ version: '0.1.1', video: videoId(),
+    $('diagnostics').value = JSON.stringify({ version: '0.1.2', video: videoId(),
       active: state.active, tracks: tracks.length, blocks: state.chunks.length,
       cached: state.cache.size, audio: state.context?.state || 'not started',
-      textModel: config.textModel, voiceModel: config.voiceModel }, null, 2);
+      textModel: config.textModel, voiceModel: config.voiceModel,
+      captionSource: state.captionSource, playerCaptionRequests: state.playerRequests }, null, 2);
   }
   function videoId() { return new URL(location.href).searchParams.get('v') || ''; }
   const stale = epoch => epoch !== state.epoch;
@@ -228,21 +230,69 @@
     groups.forEach((g, i) => { if (groups[i + 1]) g.end = Math.min(g.end, groups[i + 1].start); });
     return groups.filter(g => g.end > g.start);
   }
+  function captionURL(value) {
+    try {
+      if (typeof value !== 'string' || !value.trim()) return null;
+      const url = new URL(value, location.origin);
+      if (url.protocol !== 'https:' || !['www.youtube.com', 'm.youtube.com'].includes(url.hostname) || url.pathname !== '/api/timedtext') return null;
+      return url;
+    } catch { return null; }
+  }
+  function nativeTrackCues() {
+    const cues = [];
+    for (const track of document.querySelector('video')?.textTracks || []) {
+      if (!['subtitles', 'captions'].includes(track.kind) || track.mode === 'disabled') continue;
+      for (const cue of track.cues || []) if (cue.endTime > cue.startTime && cue.text)
+        cues.push({ start: cue.startTime, end: cue.endTime, text: clean(cue.text) });
+      if (cues.length) break;
+    }
+    return cues.sort((a, b) => a.start - b.start);
+  }
+  async function fetchCaptionPage(url, epoch) {
+    // Keep the player's URL intact: changing fmt/client/token can invalidate it.
+    const controller = new AbortController();
+    pageRequests.add(controller);
+    const timer = setTimeout(() => controller.abort(), 8000);
+    try {
+      const response = await fetch(url.href, { credentials: 'include', signal: controller.signal });
+      if (stale(epoch)) throw abortError();
+      if (!response.ok) return [];
+      const cues = parseCaptions(await response.text());
+      if (stale(epoch)) throw abortError();
+      return cues;
+    } finally { clearTimeout(timer); pageRequests.delete(controller); }
+  }
   async function loadCaptions(epoch) {
-    if (imported?.video === videoId()) return imported.cues;
+    state.captionSource = ''; state.playerRequests = 0;
+    if (imported?.video === videoId()) { state.captionSource = 'import'; return imported.cues; }
+    const nativeCues = nativeTrackCues();
+    if (nativeCues.length) { state.captionSource = 'native-text-track'; return nativeCues; }
     const selected = $('track').value;
+    // Safari exposes the real caption requests made by its YouTube player via
+    // Resource Timing, including runtime parameters missing from watch HTML.
+    const observed = [...new Set(performance.getEntriesByType('resource').map(e => e.name))]
+      .map(captionURL).filter(url => url && url.searchParams.get('v') === videoId()).reverse();
+    state.playerRequests = observed.length;
+    const wanted = selected !== '' ? tracks[Number(selected)]?.languageCode : null;
+    const candidates = observed.filter(url => !wanted || url.searchParams.get('lang') === wanted).slice(0, 2);
+    for (const url of candidates) {
+      try {
+        const cues = await fetchCaptionPage(url, epoch);
+        if (cues.length) { state.captionSource = 'player-request'; return cues; }
+      } catch (error) { if (stale(epoch)) throw abortError(); }
+    }
     if (!tracks.length) await findTracks(epoch);
     const track = (selected !== '' ? tracks[Number(selected)] : null) || tracks.find(t => t.languageCode === 'en' && t.kind !== 'asr') || tracks.find(t => t.languageCode === 'en') || tracks[0];
-    let url;
+    const url = captionURL(track.baseUrl);
+    if (!url) throw new Error('YouTube вернул некорректный адрес субтитров. Обнови страницу и попробуй снова.');
     try {
-      if (typeof track.baseUrl !== 'string' || !track.baseUrl.trim()) throw new Error();
-      // Mobile YouTube also returns root-relative /api/timedtext URLs.
-      url = new URL(track.baseUrl, location.origin);
-    } catch { throw new Error('YouTube вернул некорректный адрес субтитров. Обнови страницу и попробуй снова.'); }
-    if (!['www.youtube.com', 'm.youtube.com'].includes(url.hostname) || url.pathname !== '/api/timedtext') throw new Error('Неожиданный адрес субтитров.');
+      const cues = await fetchCaptionPage(url, epoch);
+      if (cues.length) { state.captionSource = 'page-fetch'; return cues; }
+    } catch (error) { if (stale(epoch)) throw abortError(); }
     url.searchParams.set('fmt', 'json3');
     const cues = parseCaptions(await http(url.href, { epoch }));
-    if (!cues.length) throw new Error('YouTube вернул пустые субтитры. Включи CC и обнови страницу; если не помогло, загрузи файл SRT/VTT.');
+    if (!cues.length) throw new Error(`Не удалось получить текст от плеера (видно запросов: ${state.playerRequests}). Выключи и включи CC, запусти ролик на 5 секунд и снова нажми «Тест». Если ошибка повторится, пришли «Диагностику без ключа».`);
+    state.captionSource = 'extension-fetch';
     return cues;
   }
   async function decodeAudio(inline) {
@@ -294,6 +344,8 @@
   function stop(message = 'Остановлено. Новых запросов нет.') {
     state.epoch++; state.active = false; state.busy = false;
     for (const request of [...state.requests]) request.abort();
+    for (const controller of pageRequests) controller.abort();
+    pageRequests.clear();
     state.requests.clear(); stopSound(); state.cache.clear();
     if (state.video) { state.video.pause(); state.video.muted = state.originalMuted; }
     state.video = null; $('resume').disabled = true; $('caption').hidden = true;
