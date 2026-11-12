@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Gemini Voice — iPhone prototype
 // @namespace    https://github.com/Romavlus/tab-audio-translator
-// @version      0.1.2
+// @version      0.1.3
 // @description  Russian voice-over using your Gemini key and existing YouTube captions. No tab-audio capture.
 // @match        https://www.youtube.com/*
 // @match        https://m.youtube.com/*
@@ -25,7 +25,7 @@
   const defaults = { textModel: 'gemini-3.8-flash', voiceModel: 'gemini-3.8-flash-tts', voice: 'Kore' };
   const state = { epoch: 0, requests: new Set(), chunks: [], cache: new Map(),
     active: false, video: null, source: null, audioIndex: -1, testEnd: Infinity,
-    context: null, originalMuted: false, pageId: '', busy: false, captionSource: '', playerRequests: 0 };
+    context: null, originalMuted: false, pageId: '', busy: false, captionSource: '', playerRequests: 0, captionAttempts: [] };
   const pageRequests = new Set();
   let secret = '', config = { ...defaults }, tracks = [], imported = null;
   const host = document.createElement('div');
@@ -51,7 +51,7 @@
   </style><section>
     <header><strong>Gemini · озвучка YouTube</strong><button id="mini" aria-label="Свернуть">−</button></header>
     <main>
-      <p>Прототип 0.1.2 · переводит и озвучивает доступные субтитры. Без субтитров захват звука не работает.</p>
+      <p>Прототип 0.1.3 · переводит и озвучивает доступные субтитры. Без субтитров захват звука не работает.</p>
       <label>Gemini API key<input id="key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Вставь ключ только здесь"></label>
       <label><input id="remember" type="checkbox"> Сохранить ключ в хранилище Userscripts</label>
       <div class="row"><button id="check">Проверить ключ</button><button id="forget">Забыть ключ</button></div>
@@ -62,6 +62,8 @@
         <p>«Проверить ключ» загружает доступные модели. Выбери текстовую и TTS; доступ к озвучке проверяется тестом.</p>
       </details>
       <div class="row"><button id="find">Найти субтитры</button><select id="track" aria-label="Исходный язык"><option value="">Автовыбор</option></select></div>
+      <button id="transcript" style="width:100%">Взять открытую расшифровку YouTube</button>
+      <p>Если загрузка субтитров не работает: в описании ролика нажми «Показать текст видео», затем кнопку выше.</p>
       <details><summary>Если YouTube не отдаёт субтитры</summary>
         <p>Можно загрузить свой файл SRT / VTT. Обычный текст без тайм-кодов не подходит.</p>
         <input id="file" type="file" accept=".srt,.vtt,.json,text/plain,text/vtt,application/json">
@@ -78,11 +80,12 @@
   const $ = id => root.getElementById(id);
   const say = message => { $('status').textContent = message; diagnostics(); };
   function diagnostics() {
-    $('diagnostics').value = JSON.stringify({ version: '0.1.2', video: videoId(),
+    $('diagnostics').value = JSON.stringify({ version: '0.1.3', video: videoId(),
       active: state.active, tracks: tracks.length, blocks: state.chunks.length,
       cached: state.cache.size, audio: state.context?.state || 'not started',
       textModel: config.textModel, voiceModel: config.voiceModel,
-      captionSource: state.captionSource, playerCaptionRequests: state.playerRequests }, null, 2);
+      captionSource: state.captionSource, playerCaptionRequests: state.playerRequests,
+      captionAttempts: state.captionAttempts, transcriptRows: transcriptCues().length }, null, 2);
   }
   function videoId() { return new URL(location.href).searchParams.get('v') || ''; }
   const stale = epoch => epoch !== state.epoch;
@@ -248,7 +251,22 @@
     }
     return cues.sort((a, b) => a.start - b.start);
   }
-  async function fetchCaptionPage(url, epoch) {
+  function transcriptCues() {
+    const rows = document.querySelectorAll('ytd-transcript-segment-renderer, ytm-transcript-segment-renderer, transcript-segment-view-model, yt-transcript-segment-view-model');
+    const result = new Map();
+    for (const row of rows) {
+      const timestamp = row.querySelector('.segment-timestamp, #timestamp, [class*="TranscriptSegmentViewModelTimestamp"]');
+      const value = timestamp?.textContent.trim();
+      if (!value || !/^(?:\d+:)?\d{1,2}:\d{2}$/.test(value)) continue;
+      const start = value.split(':').reduce((sum, n) => sum * 60 + +n, 0);
+      const textNode = row.querySelector('.segment-text, [class*="TranscriptSegmentViewModelText"], span.ytAttributedStringHost[role="text"]');
+      const text = clean(textNode?.textContent || row.textContent.replace(value, ''));
+      if (text) result.set(`${start}:${text}`, { start, text });
+    }
+    const cues = [...result.values()].sort((a, b) => a.start - b.start);
+    return cues.map((cue, i) => ({ ...cue, end: cues[i + 1]?.start > cue.start ? cues[i + 1].start : cue.start + 6 }));
+  }
+  async function fetchCaptionPage(url, epoch, label = 'page') {
     // Keep the player's URL intact: changing fmt/client/token can invalidate it.
     const controller = new AbortController();
     pageRequests.add(controller);
@@ -256,15 +274,32 @@
     try {
       const response = await fetch(url.href, { credentials: 'include', signal: controller.signal });
       if (stale(epoch)) throw abortError();
-      if (!response.ok) return [];
-      const cues = parseCaptions(await response.text());
+      const text = await response.text();
+      const cues = response.ok ? parseCaptions(text) : [];
+      state.captionAttempts.push({ via: label, status: response.status, characters: text.length, cues: cues.length });
       if (stale(epoch)) throw abortError();
       return cues;
+    } catch (error) {
+      if (!stale(epoch)) state.captionAttempts.push({ via: label, error: error.name === 'AbortError' ? 'timeout' : 'network-or-cors' });
+      throw error;
     } finally { clearTimeout(timer); pageRequests.delete(controller); }
   }
+  async function fetchCaptionExtension(url, epoch, label) {
+    try {
+      const text = await http(url.href, { epoch });
+      const cues = parseCaptions(text);
+      state.captionAttempts.push({ via: label, characters: text.length, cues: cues.length });
+      return cues;
+    } catch (error) {
+      if (!stale(epoch)) state.captionAttempts.push({ via: label, error: /^HTTP \d+/.exec(error.message)?.[0] || 'network' });
+      throw error;
+    }
+  }
   async function loadCaptions(epoch) {
-    state.captionSource = ''; state.playerRequests = 0;
-    if (imported?.video === videoId()) { state.captionSource = 'import'; return imported.cues; }
+    state.captionSource = ''; state.playerRequests = 0; state.captionAttempts = [];
+    if (imported?.video === videoId()) { state.captionSource = imported.source || 'import'; return imported.cues; }
+    const transcript = transcriptCues();
+    if (transcript.length) { state.captionSource = 'transcript-dom'; return transcript; }
     const nativeCues = nativeTrackCues();
     if (nativeCues.length) { state.captionSource = 'native-text-track'; return nativeCues; }
     const selected = $('track').value;
@@ -277,8 +312,12 @@
     const candidates = observed.filter(url => !wanted || url.searchParams.get('lang') === wanted).slice(0, 2);
     for (const url of candidates) {
       try {
-        const cues = await fetchCaptionPage(url, epoch);
+        const cues = await fetchCaptionPage(url, epoch, 'player-page');
         if (cues.length) { state.captionSource = 'player-request'; return cues; }
+      } catch (error) { if (stale(epoch)) throw abortError(); }
+      try {
+        const cues = await fetchCaptionExtension(url, epoch, 'player-extension');
+        if (cues.length) { state.captionSource = 'player-request-extension'; return cues; }
       } catch (error) { if (stale(epoch)) throw abortError(); }
     }
     if (!tracks.length) await findTracks(epoch);
@@ -286,12 +325,12 @@
     const url = captionURL(track.baseUrl);
     if (!url) throw new Error('YouTube вернул некорректный адрес субтитров. Обнови страницу и попробуй снова.');
     try {
-      const cues = await fetchCaptionPage(url, epoch);
+      const cues = await fetchCaptionPage(url, epoch, 'track-page');
       if (cues.length) { state.captionSource = 'page-fetch'; return cues; }
     } catch (error) { if (stale(epoch)) throw abortError(); }
     url.searchParams.set('fmt', 'json3');
-    const cues = parseCaptions(await http(url.href, { epoch }));
-    if (!cues.length) throw new Error(`Не удалось получить текст от плеера (видно запросов: ${state.playerRequests}). Выключи и включи CC, запусти ролик на 5 секунд и снова нажми «Тест». Если ошибка повторится, пришли «Диагностику без ключа».`);
+    const cues = await fetchCaptionExtension(url, epoch, 'track-extension');
+    if (!cues.length) throw new Error(`Не удалось получить текст от плеера (видно запросов: ${state.playerRequests}). Открой описание ролика → «Показать текст видео» и нажми «Взять открытую расшифровку YouTube». Если не помогло, пришли диагностику — теперь она различает пустой ответ и ошибку сети.`);
     state.captionSource = 'extension-fetch';
     return cues;
   }
@@ -387,6 +426,8 @@
     if (!state.active || !state.video || state.video.paused || state.busy) return;
     const epoch = state.epoch, video = state.video;
     if (video.currentTime >= state.testEnd) return stop('Минутный тест завершён. Можно запустить ещё один или весь ролик.');
+    if (state.captionSource === 'transcript-dom' && video.currentTime >= state.chunks.at(-1)?.end)
+      return stop('Достигнут конец прочитанной части расшифровки. Прокрути текст YouTube дальше и прочитай его заново.');
     const index = currentIndex();
     if (index < 0) { stopSound(); return; }
     if (state.audioIndex === index) return;
@@ -419,6 +460,16 @@
   $('test').onclick = () => start(true);
   $('start').onclick = () => start(false);
   $('stop').onclick = () => stop();
+  $('transcript').onclick = run(async () => {
+    stop(); imported = null;
+    if (!videoId()) throw new Error('Сначала открой ролик YouTube.');
+    const cues = transcriptCues();
+    if (!cues.length) throw new Error('Расшифровка не найдена на странице. Открой описание ролика → «Показать текст видео» / «Show transcript». Это отдельный список фраз с тайм-кодами, а не CC поверх видео.');
+    imported = { video: videoId(), cues, source: 'transcript-dom' };
+    state.captionSource = 'transcript-dom';
+    const end = Math.floor(cues.at(-1).end);
+    say(`Прочитано строк: ${cues.length}, до ${Math.floor(end / 60)}:${String(end % 60).padStart(2, '0')}. Теперь нажми «Тест 60 секунд». Если список подгружается частями, прочитана только загруженная часть.`);
+  });
   $('resume').onclick = async () => {
     const epoch = state.epoch;
     try {

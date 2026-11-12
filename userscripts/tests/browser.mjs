@@ -183,6 +183,28 @@ try {
   await click('test'); await waitStatus('Не удалось получить текст от плеера');
   ok((await page.evaluate(() => mock.calls.filter(c => c.method === 'POST').length)) === paidBeforeEmpty, 'empty caption responses never trigger paid Gemini requests');
   ok(/видно запросов: \d+/.test(await status()), 'reports player request availability for real-device diagnosis');
+  const attempts = await page.evaluate(() => JSON.parse(testRoot.getElementById('diagnostics').value).captionAttempts);
+  ok(attempts.some(a => a.via === 'track-extension' && a.characters === 0), 'diagnostics identify an empty extension response');
+  ok(!JSON.stringify(attempts).includes('fixture-proof') && !JSON.stringify(attempts).includes('TEST-KEY'), 'caption diagnostics contain neither request tokens nor API key');
+  await click('transcript'); await waitStatus('Расшифровка не найдена');
+  await page.evaluate(() => {
+    const panel = document.createElement('div');
+    panel.innerHTML = '<transcript-segment-view-model><div class="ytwTranscriptSegmentViewModelTimestamp">0:00</div><span class="ytAttributedStringHost" role="text">Text already loaded by YouTube.</span></transcript-segment-view-model>' +
+      '<transcript-segment-view-model><div class="ytwTranscriptSegmentViewModelTimestamp">0:12</div><span class="ytAttributedStringHost" role="text">A second example.</span></transcript-segment-view-model>' +
+      '<ytm-transcript-segment-renderer><span class="segment-timestamp">0:24</span><span class="segment-text">The mobile layout.</span></ytm-transcript-segment-renderer>';
+    document.body.append(panel);
+    document.querySelector('video').currentTime = 0;
+  });
+  await click('transcript'); await waitStatus('Прочитано строк: 3');
+  const beforeDOM = await page.evaluate(() => mock.calls.length);
+  await click('test'); await waitStatus('Первый фрагмент готов');
+  ok(await page.evaluate(() => JSON.parse(testRoot.getElementById('diagnostics').value).captionSource === 'transcript-dom'), 'DOM transcript is used even when timedtext is empty');
+  ok(await page.evaluate(n => mock.calls.slice(n).every(c => c.url.includes('googleapis')), beforeDOM), 'DOM transcript does not fetch caption endpoints');
+  ok(await page.evaluate(() => mock.calls.filter(c => c.method === 'POST' && !c.url.includes('-tts:')).at(-1).body.contents[0].parts[0].text === 'Text already loaded by YouTube.'), 'actual transcript text reaches the translation request');
+  await click('resume'); await waitStatus('Озвучка ·');
+  await page.evaluate(() => { document.querySelector('video').currentTime = 31; });
+  await waitStatus('Достигнут конец прочитанной части');
+  ok(await page.evaluate(() => document.querySelector('video').paused), 'partial transcript end pauses instead of silently playing untranslated video');
   ok(errors.length === 0, `no browser exceptions: ${errors.join(', ')}`);
   console.log(`PASS: ${assertions} browser checks (mock Gemini/YouTube, real PCM/Web Audio). No paid API calls.`);
 } finally { await browser.close(); }
