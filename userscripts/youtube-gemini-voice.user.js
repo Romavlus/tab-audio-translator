@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Gemini Voice — iPhone prototype
 // @namespace    https://github.com/Romavlus/tab-audio-translator
-// @version      0.1.0
+// @version      0.1.1
 // @description  Russian voice-over using your Gemini key and existing YouTube captions. No tab-audio capture.
 // @match        https://www.youtube.com/*
 // @match        https://m.youtube.com/*
@@ -50,7 +50,7 @@
   </style><section>
     <header><strong>Gemini · озвучка YouTube</strong><button id="mini" aria-label="Свернуть">−</button></header>
     <main>
-      <p>Прототип 0.1 · переводит и озвучивает доступные субтитры. Без субтитров захват звука не работает.</p>
+      <p>Прототип 0.1.1 · переводит и озвучивает доступные субтитры. Без субтитров захват звука не работает.</p>
       <label>Gemini API key<input id="key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Вставь ключ только здесь"></label>
       <label><input id="remember" type="checkbox"> Сохранить ключ в хранилище Userscripts</label>
       <div class="row"><button id="check">Проверить ключ</button><button id="forget">Забыть ключ</button></div>
@@ -77,7 +77,7 @@
   const $ = id => root.getElementById(id);
   const say = message => { $('status').textContent = message; diagnostics(); };
   function diagnostics() {
-    $('diagnostics').value = JSON.stringify({ version: '0.1.0', video: videoId(),
+    $('diagnostics').value = JSON.stringify({ version: '0.1.1', video: videoId(),
       active: state.active, tracks: tracks.length, blocks: state.chunks.length,
       cached: state.cache.size, audio: state.context?.state || 'not started',
       textModel: config.textModel, voiceModel: config.voiceModel }, null, 2);
@@ -233,7 +233,12 @@
     const selected = $('track').value;
     if (!tracks.length) await findTracks(epoch);
     const track = (selected !== '' ? tracks[Number(selected)] : null) || tracks.find(t => t.languageCode === 'en' && t.kind !== 'asr') || tracks.find(t => t.languageCode === 'en') || tracks[0];
-    const url = new URL(track.baseUrl);
+    let url;
+    try {
+      if (typeof track.baseUrl !== 'string' || !track.baseUrl.trim()) throw new Error();
+      // Mobile YouTube also returns root-relative /api/timedtext URLs.
+      url = new URL(track.baseUrl, location.origin);
+    } catch { throw new Error('YouTube вернул некорректный адрес субтитров. Обнови страницу и попробуй снова.'); }
     if (!['www.youtube.com', 'm.youtube.com'].includes(url.hostname) || url.pathname !== '/api/timedtext') throw new Error('Неожиданный адрес субтитров.');
     url.searchParams.set('fmt', 'json3');
     const cues = parseCaptions(await http(url.href, { epoch }));

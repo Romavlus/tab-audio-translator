@@ -65,7 +65,7 @@ try {
   });
   const player = { videoDetails: { videoId: 'test-video' }, captions: { playerCaptionsTracklistRenderer: { captionTracks: [
     { baseUrl: 'https://www.youtube.com/api/timedtext?v=test-video&lang=de', languageCode: 'de', name: { simpleText: 'German' } },
-    { baseUrl: 'https://www.youtube.com/api/timedtext?v=test-video&lang=en', languageCode: 'en', name: { simpleText: 'English' } }
+    { baseUrl: '/api/timedtext?v=test-video&lang=en', languageCode: 'en', name: { simpleText: 'English' } }
   ] } } };
   await page.route('https://www.youtube.com/**', route => route.fulfill({ status: 200, contentType: 'text/html',
     body: `<html><body><video controls></video><script>var ytInitialPlayerResponse = ${JSON.stringify(player)};</script></body></html>` }));
@@ -112,6 +112,7 @@ try {
   ok(await page.evaluate(() => mock.calls.every(c => c.key === c.url.includes('googleapis'))), 'key is sent only to Google');
   await click('test'); await waitStatus('Первый фрагмент готов');
   ok(await page.evaluate(() => mock.calls.find(c => c.url.includes('timedtext')).url.includes('lang=en')), 'automatic track prefers English over first track');
+  ok(await page.evaluate(() => mock.calls.find(c => c.url.includes('timedtext')).url.startsWith('https://www.youtube.com/api/timedtext?')), 'relative mobile caption URL resolves against YouTube origin');
   ok(await page.evaluate(() => mock.calls.filter(c => c.method === 'POST').length === 2), 'start prepares one block using translation + voice');
   await click('resume'); await waitStatus('Озвучка ·');
   await page.waitForTimeout(250);
